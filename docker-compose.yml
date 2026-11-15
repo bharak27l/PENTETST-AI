@@ -1,0 +1,8 @@
+services:
+  pentest-ai:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=PENTETST-AI
+    restart: unless-stopped
