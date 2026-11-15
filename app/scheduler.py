@@ -14,44 +14,21 @@ _scheduler: BackgroundScheduler | None = None
 _scheduler_lock = threading.Lock()
 
 
-def _job_runner(job_id: str, owner_id: str, target: str) -> None:
+def _job_runner(job_id: str, owner_id: str, target: str, interval_seconds: int) -> None:
     started_at = datetime.now(timezone.utc)
     try:
         report = SecurityEngine().run(target)
         save_scan(report, owner_id)
         finished_at = datetime.now(timezone.utc)
-        create_job_run(
-            job_id,
-            owner_id,
-            "success",
-            started_at.isoformat(),
-            finished_at.isoformat(),
-            json.dumps(report, ensure_ascii=False),
-        )
-        update_scan_job(
-            job_id,
-            owner_id,
-            status="active",
-            last_run_at=started_at.isoformat(),
-            next_run_at=(finished_at + timedelta(seconds=settings.scheduler_interval_seconds)).isoformat(),
-        )
+        create_job_run(job_id, owner_id, "success", started_at.isoformat(), finished_at.isoformat(), json.dumps(report, ensure_ascii=False))
+        update_scan_job(job_id, owner_id, status="active", last_run_at=started_at.isoformat(),
+                        next_run_at=(finished_at + timedelta(seconds=interval_seconds)).isoformat())
     except Exception as exc:
         finished_at = datetime.now(timezone.utc)
-        create_job_run(
-            job_id,
-            owner_id,
-            "error",
-            started_at.isoformat(),
-            finished_at.isoformat(),
-            json.dumps({"error": str(exc)}, ensure_ascii=False),
-        )
-        update_scan_job(
-            job_id,
-            owner_id,
-            status="error",
-            last_run_at=started_at.isoformat(),
-            next_run_at=(finished_at + timedelta(seconds=settings.scheduler_interval_seconds)).isoformat(),
-        )
+        create_job_run(job_id, owner_id, "error", started_at.isoformat(), finished_at.isoformat(),
+                       json.dumps({"error": str(exc)}, ensure_ascii=False))
+        update_scan_job(job_id, owner_id, status="error", last_run_at=started_at.isoformat(),
+                        next_run_at=(finished_at + timedelta(seconds=interval_seconds)).isoformat())
 
 
 def start_scheduler() -> BackgroundScheduler:
@@ -79,22 +56,14 @@ def register_job(job_id: str, owner_id: str, target: str, interval_seconds: int)
     if not settings.scheduler_enabled or _scheduler is None:
         return
     interval = max(60, min(int(interval_seconds), 86400))
-    _scheduler.add_job(
-        _job_runner,
-        "interval",
-        seconds=interval,
-        id=f"scanjob-{job_id}",
-        args=[job_id, owner_id, target],
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+    _scheduler.add_job(_job_runner, "interval", seconds=interval, id=f"scanjob-{job_id}",
+                       args=[job_id, owner_id, target, interval], replace_existing=True,
+                       max_instances=1, coalesce=True)
 
 
 def unregister_job(job_id: str) -> None:
-    if _scheduler is None:
-        return
-    try:
-        _scheduler.remove_job(f"scanjob-{job_id}")
-    except Exception:
-        pass
+    if _scheduler is not None:
+        try:
+            _scheduler.remove_job(f"scanjob-{job_id}")
+        except Exception:
+            pass

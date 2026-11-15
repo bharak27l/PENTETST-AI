@@ -18,33 +18,37 @@ def _connect() -> sqlite3.Connection:
     return connection
 
 
+def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+
+
 def initialize_database() -> None:
+    """Create current schema and add compatible columns to earlier SQLite databases."""
     with _connect() as connection:
-        connection.execute(
-            """
+        connection.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
-                role TEXT NOT NULL DEFAULT 'user',
                 created_at TEXT NOT NULL
             )
-        """
-        )
-        connection.execute(
-            """
+        """)
+        if "role" not in _columns(connection, "users"):
+            connection.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+
+        connection.execute("""
             CREATE TABLE IF NOT EXISTS scans (
                 id TEXT PRIMARY KEY,
                 target TEXT NOT NULL,
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                report_json TEXT NOT NULL,
-                owner_id TEXT NOT NULL
+                report_json TEXT NOT NULL
             )
-        """
-        )
-        connection.execute(
-            """
+        """)
+        if "owner_id" not in _columns(connection, "scans"):
+            connection.execute("ALTER TABLE scans ADD COLUMN owner_id TEXT")
+
+        connection.execute("""
             CREATE TABLE IF NOT EXISTS scan_jobs (
                 id TEXT PRIMARY KEY,
                 owner_id TEXT NOT NULL,
@@ -56,10 +60,8 @@ def initialize_database() -> None:
                 created_at TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'active'
             )
-        """
-        )
-        connection.execute(
-            """
+        """)
+        connection.execute("""
             CREATE TABLE IF NOT EXISTS job_runs (
                 id TEXT PRIMARY KEY,
                 job_id TEXT NOT NULL,
@@ -69,8 +71,7 @@ def initialize_database() -> None:
                 finished_at TEXT,
                 result_json TEXT
             )
-        """
-        )
+        """)
         connection.execute("CREATE INDEX IF NOT EXISTS idx_scans_owner_created ON scans(owner_id, created_at DESC)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_owner_enabled ON scan_jobs(owner_id, enabled)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_job_runs_job_id ON job_runs(job_id, started_at DESC)")
@@ -93,8 +94,7 @@ def get_user_by_username(username: str) -> dict[str, str] | None:
     initialize_database()
     with _connect() as connection:
         row = connection.execute(
-            "SELECT id, username, password_hash, role FROM users WHERE username = ?",
-            (username,),
+            "SELECT id, username, password_hash, role FROM users WHERE username = ?", (username,)
         ).fetchone()
     return dict(row) if row else None
 
@@ -103,7 +103,7 @@ def list_users() -> list[dict[str, str]]:
     initialize_database()
     with _connect() as connection:
         rows = connection.execute("SELECT id, username, role, created_at FROM users ORDER BY created_at DESC").fetchall()
-    return [{"id": row["id"], "username": row["username"], "role": row["role"], "created_at": row["created_at"]} for row in rows]
+    return [dict(row) for row in rows]
 
 
 def save_scan(report: dict[str, Any], owner_id: str) -> dict[str, Any]:
@@ -114,14 +114,8 @@ def save_scan(report: dict[str, Any], owner_id: str) -> dict[str, Any]:
     with _connect() as connection:
         connection.execute(
             "INSERT INTO scans (id, target, status, created_at, report_json, owner_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                scan_id,
-                str(report.get("target", "")),
-                str(report.get("status", "completed")),
-                created_at,
-                json.dumps(report, ensure_ascii=False),
-                owner_id,
-            ),
+            (scan_id, str(report.get("target", "")), str(report.get("status", "completed")), created_at,
+             json.dumps(report, ensure_ascii=False), owner_id),
         )
     return report
 
@@ -133,48 +127,35 @@ def list_scans(owner_id: str, limit: int = 50, offset: int = 0) -> list[dict[str
             "SELECT id, target, status, created_at, report_json FROM scans WHERE owner_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
             (owner_id, limit, offset),
         ).fetchall()
-    result: list[dict[str, Any]] = []
-    for row in rows:
-        report = json.loads(row["report_json"])
-        result.append({
-            "id": row["id"],
-            "target": row["target"],
-            "status": row["status"],
-            "created_at": row["created_at"],
-            "summary": report.get("summary", {}),
-        })
-    return result
+    return [
+        {"id": row["id"], "target": row["target"], "status": row["status"],
+         "created_at": row["created_at"], "summary": json.loads(row["report_json"]).get("summary", {})}
+        for row in rows
+    ]
 
 
 def get_scan(scan_id: str, owner_id: str) -> dict[str, Any] | None:
     initialize_database()
     with _connect() as connection:
         row = connection.execute(
-            "SELECT report_json FROM scans WHERE id = ? AND owner_id = ?",
-            (scan_id, owner_id),
+            "SELECT report_json FROM scans WHERE id = ? AND owner_id = ?", (scan_id, owner_id)
         ).fetchone()
     return json.loads(row["report_json"]) if row else None
 
 
 def _job_from_row(row: sqlite3.Row) -> dict[str, Any]:
     return {
-        "id": row["id"],
-        "owner_id": row["owner_id"],
-        "target": row["target"],
-        "interval_seconds": row["interval_seconds"],
-        "enabled": bool(row["enabled"]),
-        "last_run_at": row["last_run_at"],
-        "next_run_at": row["next_run_at"],
-        "created_at": row["created_at"],
-        "status": row["status"],
+        "id": row["id"], "owner_id": row["owner_id"], "target": row["target"],
+        "interval_seconds": row["interval_seconds"], "enabled": bool(row["enabled"]),
+        "last_run_at": row["last_run_at"], "next_run_at": row["next_run_at"],
+        "created_at": row["created_at"], "status": row["status"],
     }
 
 
 def create_scan_job(owner_id: str, target: str, interval_seconds: int, enabled: bool = True) -> dict[str, Any]:
     from app.modules.recon.recon import ReconModule
 
-    parsed = ReconModule._normalize_target(target)
-    normalized_target = parsed["url"]
+    normalized_target = ReconModule._normalize_target(target)["url"]
     interval_seconds = max(60, min(int(interval_seconds), 86400))
     initialize_database()
     job_id = str(uuid4())
@@ -209,22 +190,15 @@ def get_scan_job(job_id: str, owner_id: str) -> dict[str, Any] | None:
     return _job_from_row(row) if row else None
 
 
-def update_scan_job(
-    job_id: str,
-    owner_id: str,
-    *,
-    enabled: bool | None = None,
-    interval_seconds: int | None = None,
-    status: str | None = None,
-    last_run_at: str | None = None,
-    next_run_at: str | None = None,
-) -> dict[str, Any] | None:
+def update_scan_job(job_id: str, owner_id: str, *, enabled: bool | None = None,
+                    interval_seconds: int | None = None, status: str | None = None,
+                    last_run_at: str | None = None, next_run_at: str | None = None) -> dict[str, Any] | None:
     current = get_scan_job(job_id, owner_id)
     if current is None:
         return None
     if enabled is not None:
         current["enabled"] = bool(enabled)
-        current["status"] = "active" if current["enabled"] else "paused"
+        current["status"] = "active" if enabled else "paused"
     if interval_seconds is not None:
         current["interval_seconds"] = max(60, min(int(interval_seconds), 86400))
     if status is not None:
@@ -235,16 +209,9 @@ def update_scan_job(
         current["next_run_at"] = next_run_at
     with _connect() as connection:
         connection.execute(
-            "UPDATE scan_jobs SET enabled = ?, interval_seconds = ?, status = ?, last_run_at = ?, next_run_at = ? WHERE id = ? AND owner_id = ?",
-            (
-                int(current["enabled"]),
-                current["interval_seconds"],
-                current["status"],
-                current["last_run_at"],
-                current["next_run_at"],
-                job_id,
-                owner_id,
-            ),
+            "UPDATE scan_jobs SET enabled=?, interval_seconds=?, status=?, last_run_at=?, next_run_at=? WHERE id=? AND owner_id=?",
+            (int(current["enabled"]), current["interval_seconds"], current["status"],
+             current["last_run_at"], current["next_run_at"], job_id, owner_id),
         )
     return current
 
@@ -252,11 +219,13 @@ def update_scan_job(
 def delete_scan_job(job_id: str, owner_id: str) -> bool:
     initialize_database()
     with _connect() as connection:
+        connection.execute("DELETE FROM job_runs WHERE job_id = ? AND owner_id = ?", (job_id, owner_id))
         cursor = connection.execute("DELETE FROM scan_jobs WHERE id = ? AND owner_id = ?", (job_id, owner_id))
     return cursor.rowcount > 0
 
 
-def create_job_run(job_id: str, owner_id: str, status: str, started_at: str, finished_at: str | None, result_json: str | None) -> dict[str, Any]:
+def create_job_run(job_id: str, owner_id: str, status: str, started_at: str,
+                   finished_at: str | None, result_json: str | None) -> dict[str, Any]:
     initialize_database()
     run_id = str(uuid4())
     with _connect() as connection:
@@ -264,16 +233,8 @@ def create_job_run(job_id: str, owner_id: str, status: str, started_at: str, fin
             "INSERT INTO job_runs (id, job_id, owner_id, status, started_at, finished_at, result_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (run_id, job_id, owner_id, status, started_at, finished_at, result_json),
         )
-        row = connection.execute("SELECT * FROM job_runs WHERE id = ?", (run_id,)).fetchone()
-    return {
-        "id": row["id"],
-        "job_id": row["job_id"],
-        "owner_id": row["owner_id"],
-        "status": row["status"],
-        "started_at": row["started_at"],
-        "finished_at": row["finished_at"],
-        "result_json": row["result_json"],
-    }
+    return {"id": run_id, "job_id": job_id, "owner_id": owner_id, "status": status,
+            "started_at": started_at, "finished_at": finished_at, "result_json": result_json}
 
 
 def list_job_runs(job_id: str, owner_id: str) -> list[dict[str, Any]]:
@@ -283,15 +244,4 @@ def list_job_runs(job_id: str, owner_id: str) -> list[dict[str, Any]]:
             "SELECT * FROM job_runs WHERE job_id = ? AND owner_id = ? ORDER BY started_at DESC LIMIT 25",
             (job_id, owner_id),
         ).fetchall()
-    return [
-        {
-            "id": row["id"],
-            "job_id": row["job_id"],
-            "owner_id": row["owner_id"],
-            "status": row["status"],
-            "started_at": row["started_at"],
-            "finished_at": row["finished_at"],
-            "result_json": row["result_json"],
-        }
-        for row in rows
-    ]
+    return [dict(row) for row in rows]
