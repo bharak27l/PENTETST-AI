@@ -1,20 +1,20 @@
 # PENTETST-AI
 
-Safe, modular security testing and reporting for systems you are authorized to assess. This MVP provides a FastAPI backend, persistent SQLite scan history, a React dashboard, and PDF/DOCX/JSON report exports.
+Safe, modular security testing and reporting for systems you are authorized to assess. Includes FastAPI, SQLite scan history, React dashboard, PDF/DOCX/JSON reports, and per-user authentication with isolated scan history.
 
-## Included
+## Configure authentication first
 
-- FastAPI API and modular orchestration
-- Safe target metadata and security-header checks
-- SQLite persistence for scan history and full reports
-- React + Vite dashboard source (`frontend/`)
-- PDF, DOCX, and JSON report exports
-- Docker support for the backend
-- Nuclei/ZAP integration status placeholders; external scanner execution is **not implemented** and no scanner process is launched
+Authentication is required for scans, history, and reports. Configure a long random signing secret and an initial administrator account through environment variables; do not commit secrets:
 
-This application does not execute exploit payloads. Only use it against systems you own or are explicitly authorized to test. The built-in checks are limited and are not a substitute for a professional security assessment.
+```bash
+export AUTH_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+export BOOTSTRAP_USERNAME="admin"
+export BOOTSTRAP_PASSWORD="replace-with-a-unique-password-of-at-least-12-characters"
+```
 
-## Backend quick start
+On first startup the bootstrap user is created if it does not already exist. User self-registration is intentionally disabled. Store `AUTH_SECRET` securely and keep it stable across restarts; changing it invalidates issued tokens. Tokens expire after one hour by default (`AUTH_TOKEN_TTL_SECONDS`).
+
+## Run the backend
 
 ```bash
 python -m venv .venv
@@ -23,9 +23,7 @@ pip install -e '.[test]'
 uvicorn app.main:app --reload
 ```
 
-Open http://localhost:8000/docs for API docs. The legacy HTML page is available at http://localhost:8000/.
-
-## React dashboard
+Open http://localhost:8000/docs. The React dashboard is at http://localhost:5173 when running Vite:
 
 ```bash
 cd frontend
@@ -33,33 +31,24 @@ npm install
 npm run dev
 ```
 
-Vite runs at http://localhost:5173 and proxies `/api` requests to the backend at `http://localhost:8000`. Start the backend separately.
-
 ## API
 
-- `POST /api/scan` with `{"target":"https://example.com"}` runs safe metadata/header checks and saves the report.
-- `GET /api/scans` lists persisted scans (`limit` 1–100, `offset` >= 0).
-- `GET /api/scans/{id}` returns a saved report.
-- `GET /api/scans/{id}/export/pdf`, `/docx`, or `/json` downloads an export.
-- `GET /api/integrations` reports the disabled external scanner adapters.
+- `POST /api/auth/login` with username/password returns a bearer token.
+- `GET /api/auth/me` returns the authenticated user.
+- `POST /api/scan` requires a bearer token and stores the report under that user.
+- `GET /api/scans` lists only the authenticated user's scans.
+- `GET /api/scans/{id}` and `/export/{pdf|docx|json}` only expose the owner's report.
+- `GET /api/integrations` reports disabled scanner placeholders.
 
-SQLite defaults to `./data/pentest_ai.db`; configure `SQLITE_DATABASE_PATH` to change it.
-
-## Docker
-
-```bash
-docker compose up --build
-```
-
-The API listens on port 8000. Persist database data by mounting a host directory at `/app/data`.
+SQLite defaults to `./data/pentest_ai.db` (`SQLITE_DATABASE_PATH`). Existing scan rows without an owner remain inaccessible, rather than being exposed to newly created accounts.
 
 ## Safety
 
 - HTTP/HTTPS only; private and loopback IP literals are blocked by default.
 - No exploitation, intrusive fuzzing, port scanning, or external scanner execution is included.
-- Nuclei/ZAP adapters are intentionally disabled placeholders, not executable integrations.
-- Use only with explicit authorization and follow your organization's rules of engagement.
+- Nuclei/ZAP integrations remain disabled placeholders; no external scanner is launched.
+- Use only with explicit authorization. Built-in checks are limited and not a substitute for a professional assessment.
 
-## License
+## Docker
 
-MIT
+Set `AUTH_SECRET`, `BOOTSTRAP_USERNAME`, and `BOOTSTRAP_PASSWORD` in the environment, then run `docker compose up --build`. Keep secrets out of source control and use a persistent `/app/data` volume.

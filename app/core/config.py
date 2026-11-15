@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "PENTETST-AI"
-    app_version: str = "0.1.0"
+    app_version: str = "0.3.0"
     request_timeout: float = 10.0
     allowed_ports: list[int] = [80, 443]
     allow_private_targets: bool = False
@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_model: str = "gpt-4o-mini"
     sqlite_database_path: str = "./data/pentest_ai.db"
+    auth_secret: str = ""
+    auth_token_ttl_seconds: int = 3600
+    bootstrap_username: str = ""
+    bootstrap_password: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

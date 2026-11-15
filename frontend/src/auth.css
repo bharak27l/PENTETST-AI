@@ -1,0 +1,2 @@
+/* Authenticated dashboard additions */
+.auth-layout{max-width:620px;padding-top:10vh}.auth-panel form{display:grid;gap:14px;margin-top:22px}.auth-panel label{display:grid;gap:8px;font-weight:600}.auth-panel input{background:#0b1220;color:#f9fafb;border:1px solid #35445e;border-radius:9px;padding:12px}.auth-panel p{color:#9ca3af}.top-actions{display:flex;align-items:center;gap:12px}
