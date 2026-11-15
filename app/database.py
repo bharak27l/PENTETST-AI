@@ -30,6 +30,9 @@ def initialize_database() -> None:
                 owner_id TEXT
             )
         """)
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(scans)")}
+        if "owner_id" not in columns:
+            connection.execute("ALTER TABLE scans ADD COLUMN owner_id TEXT")
         connection.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
@@ -111,61 +114,52 @@ def get_scan(scan_id: str, owner_id: str) -> dict[str, Any] | None:
     return json.loads(row["report_json"]) if row else None
 
 
+def _job_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"], "owner_id": row["owner_id"], "target": row["target"],
+        "interval_seconds": row["interval_seconds"], "enabled": bool(row["enabled"]),
+        "last_run_at": row["last_run_at"], "next_run_at": row["next_run_at"],
+        "created_at": row["created_at"], "status": row["status"],
+    }
+
+
 def create_scan_job(owner_id: str, target: str, interval_seconds: int, enabled: bool = True) -> dict[str, Any]:
+    # Reuse the same target validation as a manual scan, without making a network request.
+    from app.modules.recon.recon import ReconModule
+    parsed = ReconModule._normalize_target(target)
+    canonical_target = parsed["url"]
+    interval_seconds = max(60, min(int(interval_seconds), 86400))
     initialize_database()
     job_id = str(uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
-    next_run_at = created_at if enabled else None
     with _connect() as connection:
         connection.execute(
-            "INSERT INTO scan_jobs (id, owner_id, target, interval_seconds, enabled, last_run_at, next_run_at, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (job_id, owner_id, target, int(interval_seconds), int(enabled), None, next_run_at, created_at, "active"),
+            "INSERT INTO scan_jobs (id, owner_id, target, interval_seconds, enabled, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (job_id, owner_id, canonical_target, interval_seconds, int(enabled), created_at, "active" if enabled else "paused"),
         )
-    return {"id": job_id, "owner_id": owner_id, "target": target, "interval_seconds": int(interval_seconds), "enabled": bool(enabled), "next_run_at": next_run_at, "created_at": created_at, "status": "active"}
+        row = connection.execute("SELECT * FROM scan_jobs WHERE id = ?", (job_id,)).fetchone()
+    return _job_from_row(row)
 
 
 def list_scan_jobs(owner_id: str) -> list[dict[str, Any]]:
     initialize_database()
     with _connect() as connection:
-        rows = connection.execute(
-            "SELECT id, owner_id, target, interval_seconds, enabled, last_run_at, next_run_at, created_at, status FROM scan_jobs WHERE owner_id = ? ORDER BY created_at DESC",
-            (owner_id,),
-        ).fetchall()
-    return [
-        {
-            "id": row["id"],
-            "owner_id": row["owner_id"],
-            "target": row["target"],
-            "interval_seconds": row["interval_seconds"],
-            "enabled": bool(row["enabled"]),
-            "last_run_at": row["last_run_at"],
-            "next_run_at": row["next_run_at"],
-            "created_at": row["created_at"],
-            "status": row["status"],
-        } for row in rows
-    ]
+        rows = connection.execute("SELECT * FROM scan_jobs WHERE owner_id = ? ORDER BY created_at DESC", (owner_id,)).fetchall()
+    return [_job_from_row(row) for row in rows]
+
+
+def list_enabled_scan_jobs() -> list[dict[str, Any]]:
+    initialize_database()
+    with _connect() as connection:
+        rows = connection.execute("SELECT * FROM scan_jobs WHERE enabled = 1 ORDER BY created_at ASC").fetchall()
+    return [_job_from_row(row) for row in rows]
 
 
 def get_scan_job(job_id: str, owner_id: str) -> dict[str, Any] | None:
     initialize_database()
     with _connect() as connection:
-        row = connection.execute(
-            "SELECT id, owner_id, target, interval_seconds, enabled, last_run_at, next_run_at, created_at, status FROM scan_jobs WHERE id = ? AND owner_id = ?",
-            (job_id, owner_id),
-        ).fetchone()
-    if row is None:
-        return None
-    return {
-        "id": row["id"],
-        "owner_id": row["owner_id"],
-        "target": row["target"],
-        "interval_seconds": row["interval_seconds"],
-        "enabled": bool(row["enabled"]),
-        "last_run_at": row["last_run_at"],
-        "next_run_at": row["next_run_at"],
-        "created_at": row["created_at"],
-        "status": row["status"],
-    }
+        row = connection.execute("SELECT * FROM scan_jobs WHERE id = ? AND owner_id = ?", (job_id, owner_id)).fetchone()
+    return _job_from_row(row) if row else None
 
 
 def update_scan_job(job_id: str, owner_id: str, *, enabled: bool | None = None, interval_seconds: int | None = None, status: str | None = None, last_run_at: str | None = None, next_run_at: str | None = None) -> dict[str, Any] | None:
@@ -174,8 +168,9 @@ def update_scan_job(job_id: str, owner_id: str, *, enabled: bool | None = None, 
         return None
     if enabled is not None:
         current["enabled"] = bool(enabled)
+        current["status"] = "active" if enabled else "paused"
     if interval_seconds is not None:
-        current["interval_seconds"] = int(interval_seconds)
+        current["interval_seconds"] = max(60, min(int(interval_seconds), 86400))
     if status is not None:
         current["status"] = status
     if last_run_at is not None:

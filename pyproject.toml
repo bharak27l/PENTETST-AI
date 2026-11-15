@@ -1,57 +1,30 @@
-from __future__ import annotations
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
-import threading
-from datetime import datetime, timezone
+[project]
+name = "pentest-ai"
+version = "0.4.1"
+description = "Safe, modular pentest orchestration and reporting application"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+  "httpx>=0.27.0",
+  "jinja2>=3.1.4",
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.5.2",
+  "reportlab>=4.2.2",
+  "python-docx>=1.1.2",
+  "apscheduler>=3.10.4,<4",
+]
 
-from apscheduler.schedulers.background import BackgroundScheduler
+[project.optional-dependencies]
+test = ["pytest>=8.3.0", "httpx>=0.27.0"]
 
-from app.core.config import settings
-from app.core.engine import SecurityEngine
-from app.database import get_scan_job, save_scan, update_scan_job
+[project.scripts]
+pentest-ai = "app.cli:main"
 
-_scheduler: BackgroundScheduler | None = None
-_scheduler_lock = threading.Lock()
-
-
-def _job_runner(job_id: str, owner_id: str):
-    try:
-        job = get_scan_job(job_id, owner_id)
-        if job is None or not job.get("enabled"):
-            return
-        report = SecurityEngine().run(job["target"])
-        save_scan(report, owner_id)
-        update_scan_job(job_id, owner_id, last_run_at=datetime.now(timezone.utc).isoformat(), next_run_at=datetime.now(timezone.utc).isoformat())
-    except Exception:
-        update_scan_job(job_id, owner_id, status="error")
-
-
-def start_scheduler() -> BackgroundScheduler:
-    global _scheduler
-    with _scheduler_lock:
-        if _scheduler is not None:
-            return _scheduler
-        scheduler = BackgroundScheduler()
-        scheduler.start()
-        _scheduler = scheduler
-        return scheduler
-
-
-def register_job(job_id: str, owner_id: str, interval_seconds: int) -> None:
-    if not settings.scheduler_enabled or _scheduler is None:
-        return
-    _scheduler.add_job(
-        _job_runner,
-        "interval",
-        seconds=max(60, int(interval_seconds)),
-        id=f"scanjob-{job_id}",
-        args=[job_id, owner_id],
-        replace_existing=True,
-    )
-
-
-def unregister_job(job_id: str) -> None:
-    if _scheduler is not None:
-        try:
-            _scheduler.remove_job(f"scanjob-{job_id}")
-        except Exception:
-            pass
+[tool.setuptools.packages.find]
+include = ["app*"]

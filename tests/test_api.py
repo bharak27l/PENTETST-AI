@@ -1,52 +1,58 @@
-# PENTETST-AI
+from fastapi.testclient import TestClient
 
-Safe, modular security testing and reporting for systems you are authorized to assess.
+from app.core.auth import create_access_token, hash_password
+from app.core.config import settings
+from app.database import create_scan_job, create_user, get_scan, get_scan_job, list_scan_jobs
+from app.main import app
 
-## Scheduled scans
+client = TestClient(app)
 
-This release adds optional scheduled scan jobs behind a strict opt-in configuration flag:
 
-```bash
-export SCHEDULER_ENABLED=true
-export SCHEDULER_INTERVAL_SECONDS=3600
-```
+def _auth_headers(monkeypatch, username='test-user'):
+    monkeypatch.setattr(settings, 'auth_secret', 'test-secret-with-more-than-32-characters')
+    user = create_user(username, hash_password(f'{username}-password-123'))
+    return user, {'Authorization': f'Bearer {create_access_token(user)}'}
 
-When enabled, a logged-in user can create scan jobs through the API and receive periodic runs for the configured target. Jobs remain user-specific and are stored in SQLite. The scheduler is intentionally limited to safe, authorized scanning workflows and does not execute exploit payloads.
 
-## Authentication
+def test_health_endpoint():
+    response = client.get('/health')
+    assert response.status_code == 200
+    assert response.json()['status'] == 'ok'
 
-Before starting the service, configure:
 
-```bash
-export AUTH_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
-export BOOTSTRAP_USERNAME="admin"
-export BOOTSTRAP_PASSWORD="replace-with-a-unique-password-of-at-least-12-characters"
-```
+def test_scan_requires_authentication():
+    assert client.get('/api/scans').status_code == 401
 
-## Run the backend
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e '.[test]'
-uvicorn app.main:app --reload
-```
+def test_invalid_target_rejected_for_authenticated_user(monkeypatch):
+    _, headers = _auth_headers(monkeypatch)
+    response = client.post('/api/scan', json={'target': 'ftp://example.com'}, headers=headers)
+    assert response.status_code == 400
 
-Then use the API docs at http://localhost:8000/docs.
 
-## API
+def test_owner_scoped_scan_lookup(monkeypatch):
+    user, _ = _auth_headers(monkeypatch, 'owner-test')
+    report = {'target': 'https://example.com', 'status': 'completed', 'summary': {}, 'findings': []}
+    from app.database import save_scan
+    saved = save_scan(report, user['id'])
+    assert get_scan(saved['id'], user['id']) is not None
+    assert get_scan(saved['id'], 'different-owner') is None
 
-- `POST /api/auth/login`
-- `POST /api/scan`
-- `GET /api/scans`
-- `GET /api/scans/{id}/export/{pdf|docx|json}`
-- `POST /api/jobs` to create a scheduled scan job
-- `GET /api/jobs` to list scheduled jobs
-- `DELETE /api/jobs/{id}` to remove a job
 
-## Safety
+def test_jobs_are_owner_scoped_and_disabled_by_default(monkeypatch):
+    user, headers = _auth_headers(monkeypatch, 'job-test')
+    monkeypatch.setattr(settings, 'scheduler_enabled', False)
+    response = client.post('/api/jobs', json={'target': 'https://example.com', 'interval_seconds': 3600}, headers=headers)
+    assert response.status_code == 400
+    created = create_scan_job(user['id'], 'https://example.com', 3600)
+    assert get_scan_job(created['id'], user['id']) is not None
+    assert get_scan_job(created['id'], 'other-user') is None
+    assert created in list_scan_jobs(user['id'])
 
-- HTTP/HTTPS only
-- Private/loopback targets are blocked by default
-- No exploit execution or destructive testing is included
-- External scanner integrations remain intentionally disabled placeholders
+
+def test_integrations_remain_disabled(monkeypatch):
+    _, headers = _auth_headers(monkeypatch, 'integration-test')
+    response = client.get('/api/integrations', headers=headers)
+    assert response.status_code == 200
+    assert response.json()['nuclei']['enabled'] is False
+    assert response.json()['zap']['enabled'] is False
