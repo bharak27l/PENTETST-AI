@@ -1,0 +1,21 @@
+<html>
+  <head>
+    <title>{{ title }}</title>
+  </head>
+  <body>
+    <div>
+      <h1>{{ title }}</h1>
+      <p>Target: {{ target }}</p>
+      <h2>Findings</h2>
+      {% if findings %}
+        <ul>
+          {% for item in findings %}
+            <li><strong>{{ item.title }}</strong> ({{ item.severity }})</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p>No issues were detected.</p>
+      {% endif %}
+    </div>
+  </body>
+</html>

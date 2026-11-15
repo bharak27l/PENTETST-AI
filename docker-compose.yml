@@ -1,0 +1,17 @@
+services:
+  pentest-ai:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      APP_NAME: PENTETST-AI
+      SQLITE_DATABASE_PATH: /app/data/pentest_ai.db
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET to a random secret of at least 32 characters}
+      BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:?Set BOOTSTRAP_USERNAME}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:?Set BOOTSTRAP_PASSWORD}
+    volumes:
+      - pentest-ai-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  pentest-ai-data:
