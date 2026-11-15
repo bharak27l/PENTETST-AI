@@ -2,15 +2,15 @@ from fastapi.testclient import TestClient
 
 from app.core.auth import create_access_token, hash_password
 from app.core.config import settings
-from app.database import create_scan_job, create_user, get_scan, get_scan_job, list_scan_jobs
+from app.database import create_user, create_scan_job, get_scan, get_scan_job, list_scan_jobs
 from app.main import app
 
 client = TestClient(app)
 
 
-def _auth_headers(monkeypatch, username='test-user'):
+def _auth_headers(monkeypatch, username='test-user', role='user'):
     monkeypatch.setattr(settings, 'auth_secret', 'test-secret-with-more-than-32-characters')
-    user = create_user(username, hash_password(f'{username}-password-123'))
+    user = create_user(username, hash_password(f'{username}-password-123'), role=role)
     return user, {'Authorization': f'Bearer {create_access_token(user)}'}
 
 
@@ -21,7 +21,8 @@ def test_health_endpoint():
 
 
 def test_scan_requires_authentication():
-    assert client.get('/api/scans').status_code == 401
+    response = client.get('/api/scans')
+    assert response.status_code == 401
 
 
 def test_invalid_target_rejected_for_authenticated_user(monkeypatch):
@@ -32,11 +33,12 @@ def test_invalid_target_rejected_for_authenticated_user(monkeypatch):
 
 def test_owner_scoped_scan_lookup(monkeypatch):
     user, _ = _auth_headers(monkeypatch, 'owner-test')
-    report = {'target': 'https://example.com', 'status': 'completed', 'summary': {}, 'findings': []}
+    saved = {'target': 'https://example.com', 'status': 'completed', 'summary': {}, 'findings': []}
     from app.database import save_scan
-    saved = save_scan(report, user['id'])
-    assert get_scan(saved['id'], user['id']) is not None
-    assert get_scan(saved['id'], 'different-owner') is None
+
+    saved_report = save_scan(saved, user['id'])
+    assert get_scan(saved_report['id'], user['id']) is not None
+    assert get_scan(saved_report['id'], 'different-owner') is None
 
 
 def test_jobs_are_owner_scoped_and_disabled_by_default(monkeypatch):
@@ -50,8 +52,16 @@ def test_jobs_are_owner_scoped_and_disabled_by_default(monkeypatch):
     assert created in list_scan_jobs(user['id'])
 
 
-def test_integrations_remain_disabled(monkeypatch):
+def test_admin_creation_requires_admin(monkeypatch):
+    user, headers = _auth_headers(monkeypatch, 'regular-user', 'user')
+    response = client.get('/api/admin/users', headers=headers)
+    assert response.status_code == 403
+
+
+def test_integrations_are_opt_in(monkeypatch):
     _, headers = _auth_headers(monkeypatch, 'integration-test')
+    monkeypatch.setattr(settings, 'nuclei_enabled', False)
+    monkeypatch.setattr(settings, 'zap_enabled', False)
     response = client.get('/api/integrations', headers=headers)
     assert response.status_code == 200
     assert response.json()['nuclei']['enabled'] is False

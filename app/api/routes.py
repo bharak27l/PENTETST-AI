@@ -4,17 +4,21 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from app.core.auth import create_access_token, get_current_user, verify_password
+from app.core.auth import create_access_token, get_current_user, require_admin, verify_password
 from app.core.config import settings
 from app.core.engine import SecurityEngine
 from app.database import (
+    create_job_run,
     create_scan_job,
+    create_user,
     delete_scan_job,
     get_scan,
     get_scan_job,
     get_user_by_username,
+    list_job_runs,
     list_scan_jobs,
     list_scans,
+    list_users,
     save_scan,
     update_scan_job,
 )
@@ -28,6 +32,12 @@ exporter = ReportExporter()
 class LoginRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=128)
     password: str = Field(..., min_length=1, max_length=1024)
+
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=128)
+    password: str = Field(..., min_length=12, max_length=1024)
+    role: str = Field(default="user", pattern="^(admin|user)$")
 
 
 class ScanRequest(BaseModel):
@@ -54,13 +64,27 @@ def login(payload: LoginRequest):
         "access_token": create_access_token(user),
         "token_type": "bearer",
         "expires_in": settings.auth_token_ttl_seconds,
-        "user": {"id": user["id"], "username": user["username"]},
+        "user": {"id": user["id"], "username": user["username"], "role": user["role"]},
     }
 
 
 @router.get("/auth/me")
 def current_user(user: dict = Depends(get_current_user)):
     return user
+
+
+@router.get("/admin/users")
+def admin_users(user: dict = Depends(require_admin)):
+    return {"items": list_users(), "current_user": user}
+
+
+@router.post("/admin/users")
+def create_admin_user(payload: UserCreateRequest, user: dict = Depends(require_admin)):
+    existing = get_user_by_username(payload.username)
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="User already exists.")
+    created = create_user(payload.username, __import__("hashlib").sha256(payload.password.encode()).hexdigest(), role=payload.role)
+    return {"user": created, "created_by": user["username"]}
 
 
 @router.post("/scan")
@@ -106,19 +130,22 @@ def export_report(scan_id: str, format: str, user: dict = Depends(get_current_us
 
 @router.get("/jobs")
 def list_jobs(user: dict = Depends(get_current_user)):
-    return {"items": list_scan_jobs(user["id"])}
+    return {"items": list_scan_jobs(user["id"]) }
+
+
+@router.get("/jobs/{job_id}/runs")
+def list_job_runs_endpoint(job_id: str, user: dict = Depends(get_current_user)):
+    return {"items": list_job_runs(job_id, user["id"]) }
 
 
 @router.post("/jobs")
 def create_job(payload: JobRequest, user: dict = Depends(get_current_user)):
     if not settings.scheduler_enabled:
         raise HTTPException(status_code=400, detail="Scheduled scans are disabled. Set SCHEDULER_ENABLED=true to enable them.")
-    try:
-        job = create_scan_job(user["id"], payload.target, payload.interval_seconds, payload.enabled)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job = create_scan_job(user["id"], payload.target, payload.interval_seconds, payload.enabled)
     if job["enabled"]:
         from app.scheduler import register_job
+
         register_job(job["id"], user["id"], job["target"], job["interval_seconds"])
     return job
 
@@ -131,6 +158,7 @@ def edit_job(job_id: str, payload: JobUpdateRequest, user: dict = Depends(get_cu
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     from app.scheduler import register_job, unregister_job
+
     if job["enabled"]:
         register_job(job["id"], user["id"], job["target"], job["interval_seconds"])
     else:
@@ -143,6 +171,7 @@ def delete_job(job_id: str, user: dict = Depends(get_current_user)):
     if not delete_scan_job(job_id, user["id"]):
         raise HTTPException(status_code=404, detail="Job not found")
     from app.scheduler import unregister_job
+
     unregister_job(job_id)
     return {"status": "deleted"}
 
@@ -150,10 +179,10 @@ def delete_job(job_id: str, user: dict = Depends(get_current_user)):
 @router.get("/integrations")
 def integration_status(user: dict = Depends(get_current_user)):
     return {
-        "nuclei": {"enabled": False, "available": False, "mode": "disabled"},
-        "zap": {"enabled": False, "available": False, "mode": "disabled"},
+        "nuclei": {"enabled": bool(settings.nuclei_enabled), "available": bool(settings.nuclei_enabled), "mode": "enabled" if settings.nuclei_enabled else "disabled"},
+        "zap": {"enabled": bool(settings.zap_enabled), "available": bool(settings.zap_enabled), "mode": "enabled" if settings.zap_enabled else "disabled"},
         "scheduler": {"enabled": bool(settings.scheduler_enabled), "mode": "enabled" if settings.scheduler_enabled else "disabled"},
-        "message": "External scanner execution is not implemented; no scanner is launched.",
+        "message": "External scanner execution remains opt-in only and is not automatically launched.",
     }
 
 

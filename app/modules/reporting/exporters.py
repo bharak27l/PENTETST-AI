@@ -20,11 +20,12 @@ class ReportExporter:
 
     @staticmethod
     def _pdf(report: dict[str, Any]) -> bytes:
+        from xml.sax.saxutils import escape
+
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import letter
         from reportlab.lib.styles import getSampleStyleSheet
         from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-        from xml.sax.saxutils import escape
 
         output = BytesIO()
         document = SimpleDocTemplate(output, pagesize=letter, title="PENTETST-AI Security Report")
@@ -32,8 +33,10 @@ class ReportExporter:
         story = [Paragraph("PENTETST-AI Security Report", styles["Title"]), Spacer(1, 12)]
         story.append(Paragraph(f"Target: {escape(str(report.get('target', '')))}", styles["Normal"]))
         summary = report.get("summary", {})
-        story.append(Paragraph(f"Findings: {summary.get('total_findings', 0)}", styles["Normal"]))
+        if isinstance(summary, dict):
+            story.append(Paragraph(f"Total findings: {summary.get('total_findings', 0)} | High: {summary.get('high', 0)} | Medium: {summary.get('medium', 0)} | Low: {summary.get('low', 0)}", styles["Normal"]))
         story.append(Spacer(1, 12))
+
         findings = report.get("prioritized_findings", report.get("findings", []))
         if findings:
             data = [["Severity", "Finding", "Recommendation"]]
@@ -65,7 +68,8 @@ class ReportExporter:
         document.add_heading("PENTETST-AI Security Report", 0)
         document.add_paragraph(f"Target: {report.get('target', '')}")
         summary = report.get("summary", {})
-        document.add_paragraph(f"Findings: {summary.get('total_findings', 0)}")
+        if isinstance(summary, dict):
+            document.add_paragraph(f"Total findings: {summary.get('total_findings', 0)} | High: {summary.get('high', 0)} | Medium: {summary.get('medium', 0)} | Low: {summary.get('low', 0)}")
         findings = report.get("prioritized_findings", report.get("findings", []))
         if findings:
             table = document.add_table(rows=1, cols=3)

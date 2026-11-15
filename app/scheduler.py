@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -7,7 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.core.config import settings
 from app.core.engine import SecurityEngine
-from app.database import list_enabled_scan_jobs, save_scan, update_scan_job
+from app.database import create_job_run, list_enabled_scan_jobs, save_scan, update_scan_job
 
 _scheduler: BackgroundScheduler | None = None
 _scheduler_lock = threading.Lock()
@@ -18,11 +19,39 @@ def _job_runner(job_id: str, owner_id: str, target: str) -> None:
     try:
         report = SecurityEngine().run(target)
         save_scan(report, owner_id)
-        next_run = datetime.now(timezone.utc) + timedelta(seconds=settings.scheduler_interval_seconds)
-        update_scan_job(job_id, owner_id, status="active", last_run_at=started_at.isoformat(), next_run_at=next_run.isoformat())
-    except Exception:
-        next_run = datetime.now(timezone.utc) + timedelta(seconds=settings.scheduler_interval_seconds)
-        update_scan_job(job_id, owner_id, status="error", last_run_at=started_at.isoformat(), next_run_at=next_run.isoformat())
+        finished_at = datetime.now(timezone.utc)
+        create_job_run(
+            job_id,
+            owner_id,
+            "success",
+            started_at.isoformat(),
+            finished_at.isoformat(),
+            json.dumps(report, ensure_ascii=False),
+        )
+        update_scan_job(
+            job_id,
+            owner_id,
+            status="active",
+            last_run_at=started_at.isoformat(),
+            next_run_at=(finished_at + timedelta(seconds=settings.scheduler_interval_seconds)).isoformat(),
+        )
+    except Exception as exc:
+        finished_at = datetime.now(timezone.utc)
+        create_job_run(
+            job_id,
+            owner_id,
+            "error",
+            started_at.isoformat(),
+            finished_at.isoformat(),
+            json.dumps({"error": str(exc)}, ensure_ascii=False),
+        )
+        update_scan_job(
+            job_id,
+            owner_id,
+            status="error",
+            last_run_at=started_at.isoformat(),
+            next_run_at=(finished_at + timedelta(seconds=settings.scheduler_interval_seconds)).isoformat(),
+        )
 
 
 def start_scheduler() -> BackgroundScheduler:

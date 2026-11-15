@@ -1,1 +1,351 @@
-:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#e5e7eb;background:#090f1d;font-synthesis:none;text-rendering:optimizeLegibility}*{box-sizing:border-box}body{margin:0}.layout{max-width:1080px;margin:auto;padding:36px 22px 60px}.topbar,.section-heading,.finding-head,.input-row{display:flex;align-items:center;justify-content:space-between;gap:16px}.topbar{margin-bottom:26px}.topbar h1{font-size:25px;margin:5px 0}.eyebrow{font-size:11px;letter-spacing:.13em;color:#60a5fa;font-weight:700}.safe-badge,.severity{border-radius:999px;padding:7px 11px;background:#12332c;color:#6ee7b7;font-size:12px}.panel{background:#111a2b;border:1px solid #253149;border-radius:16px;padding:24px;margin:16px 0}.hero h2,.panel h2{margin:4px 0 8px}.hero p,.muted,footer{color:#9ca3af}.scan-form{margin-top:24px}.scan-form label{display:block;font-weight:600;margin-bottom:8px}.scan-form input{flex:1;min-width:0;background:#0b1220;color:#f9fafb;border:1px solid #35445e;border-radius:9px;padding:12px}.scan-form small,.finding small,.history-row small{display:block;color:#9ca3af;margin-top:8px}button,.exports a{border:0;border-radius:9px;padding:12px 16px;background:#2563eb;color:#fff;font-weight:650;cursor:pointer;text-decoration:none}button:disabled{opacity:.6;cursor:wait}.secondary{background:#273449}.exports{display:flex;gap:8px}.exports a{font-size:12px;padding:9px 12px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:22px 0}.stats div{padding:16px;border-radius:10px;background:#0b1220}.stats strong,.stats span{display:block}.stats strong{font-size:25px}.stats span{font-size:12px;color:#9ca3af;margin-top:5px}.finding{padding:16px 0;border-top:1px solid #253149}.finding h3{margin:0;font-size:16px}.finding p{color:#cbd5e1}.severity{background:#243047;color:#cbd5e1}.severity.high,.severity.critical{background:#4b2028;color:#fda4af}.severity.medium{background:#49351e;color:#fcd34d}.severity.low{background:#1e3a5f;color:#93c5fd}.history-row{width:100%;display:flex;align-items:center;justify-content:space-between;text-align:left;background:transparent;border-top:1px solid #253149;border-radius:0;padding:14px 0}.history-row strong{display:block}.history-count{color:#93c5fd}.error{padding:13px;border:1px solid #7f1d1d;background:#3f151b;color:#fecaca;border-radius:9px}footer{font-size:12px;padding:8px 2px}@media(max-width:650px){.layout{padding:22px 14px}.topbar,.section-heading{align-items:flex-start;flex-direction:column}.input-row{align-items:stretch;flex-direction:column}.stats{grid-template-columns:repeat(2,1fr)}.exports{flex-wrap:wrap}}
+import { useCallback, useEffect, useState } from 'react';
+
+const API = '/api';
+
+export default function Dashboard() {
+  const [token, setToken] = useState(localStorage.getItem('pentest_token') || '');
+  const [user, setUser] = useState(null);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [history, setHistory] = useState([]);
+  const [jobs, setJobs] = useState([]);
+  const [report, setReport] = useState(null);
+  const [target, setTarget] = useState('');
+  const [jobTarget, setJobTarget] = useState('');
+  const [jobInterval, setJobInterval] = useState(3600);
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserRole, setNewUserRole] = useState('user');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const request = useCallback((path, options = {}) => fetch(`${API}${path}`, {
+    ...options,
+    headers: { ...(options.headers || {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  }), [token]);
+
+  const currentUser = useCallback(async () => {
+    if (!token) return;
+    try {
+      const response = await request('/auth/me');
+      if (!response.ok) throw new Error('Could not load user info.');
+      setUser(await response.json());
+    } catch (err) { setError(err.message); }
+  }, [request, token]);
+
+  const refresh = useCallback(async () => {
+    if (!token) return;
+    try {
+      const response = await request('/scans');
+      if (response.status === 401) { signOut(); return; }
+      if (!response.ok) throw new Error('Could not load scan history.');
+      setHistory((await response.json()).items || []);
+      const jobsResponse = await request('/jobs');
+      if (jobsResponse.ok) setJobs((await jobsResponse.json()).items || []);
+    } catch (err) { setError(err.message); }
+  }, [request, token]);
+
+  useEffect(() => { if (token) { currentUser(); refresh(); } }, [token, currentUser, refresh]);
+
+  async function signIn(event) {
+    event.preventDefault();
+    setError('');
+    setBusy(true);
+    try {
+      const response = await fetch(`${API}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Sign in failed.');
+      localStorage.setItem('pentest_token', data.access_token);
+      setToken(data.access_token);
+      setUser(data.user);
+      setPassword('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function signOut() {
+    localStorage.removeItem('pentest_token');
+    setToken('');
+    setUser(null);
+    setHistory([]);
+    setJobs([]);
+    setReport(null);
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    setBusy(true); setError(''); setReport(null);
+    try {
+      const response = await request('/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Scan request failed.');
+      setReport(data); setTarget(''); await refresh();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createJob(event) {
+    event.preventDefault();
+    setBusy(true); setError('');
+    try {
+      const response = await request('/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: jobTarget, interval_seconds: Number(jobInterval), enabled: true }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Job creation failed.');
+      setJobTarget(''); setJobInterval(3600); await refresh();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createUser(event) {
+    event.preventDefault();
+    setBusy(true); setError('');
+    try {
+      const response = await request('/admin/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: newUserName, password: newUserPassword, role: newUserRole }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'User creation failed.');
+      setNewUserName(''); setNewUserPassword(''); setNewUserRole('user');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openScan(id) {
+    setError('');
+    try {
+      const response = await request(`/scans/${encodeURIComponent(id)}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Could not load report.');
+      setReport(data);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  if (!token) {
+    return (
+      <main className="layout auth-layout">
+        <header className="topbar">
+          <div>
+            <div className="eyebrow">AUTHORIZED SECURITY TESTING</div>
+            <h1>PENTETST-AI</h1>
+          </div>
+          <span className="safe-badge">Safe checks only</span>
+        </header>
+        <section className="panel auth-panel">
+          <h2>Sign in</h2>
+          <p>Use the configured backend administrator or user account.</p>
+          <form onSubmit={signIn} className="auth-form">
+            <label>
+              Username
+              <input autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required />
+            </label>
+            <label>
+              Password
+              <input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required />
+            </label>
+            <button type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+          </form>
+          {error && <div role="alert" className="error">{error}</div>}
+        </section>
+      </main>
+    );
+  }
+
+  const findings = report?.prioritized_findings || report?.findings || [];
+  const isAdmin = user?.role === 'admin';
+
+  return (
+    <main className="layout">
+      <header className="topbar">
+        <div>
+          <div className="eyebrow">AUTHORIZED SECURITY TESTING</div>
+          <h1>PENTETST-AI</h1>
+        </div>
+        <div className="top-actions">
+          <span className="safe-badge">{user?.role || 'user'}</span>
+          <button className="secondary" type="button" onClick={signOut}>Sign out</button>
+        </div>
+      </header>
+
+      <section className="panel hero">
+        <div>
+          <h2>Assessment dashboard</h2>
+          <p>Collect safe target metadata, review security headers, and export reports.</p>
+        </div>
+        <form onSubmit={submit} className="scan-form">
+          <label htmlFor="target">Authorized target URL</label>
+          <div className="input-row">
+            <input id="target" type="url" required value={target} onChange={e => setTarget(e.target.value)} placeholder="https://example.com" />
+            <button type="submit" disabled={busy}>{busy ? 'Assessing…' : 'Run safe checks'}</button>
+          </div>
+          <small>Only scan systems you own or have explicit permission to assess.</small>
+        </form>
+      </section>
+
+      {error && <div role="alert" className="error">{error}</div>}
+
+      {report && (
+        <section className="panel">
+          <div className="section-heading">
+            <div>
+              <div className="eyebrow">REPORT</div>
+              <h2>{report.target}</h2>
+            </div>
+            <div className="exports">
+              {['pdf', 'docx', 'json'].map(format => (
+                <a
+                  key={format}
+                  href={`${API}/scans/${encodeURIComponent(report.id || '')}/export/${format}`}
+                  onClick={async event => {
+                    event.preventDefault();
+                    const response = await request(`/scans/${encodeURIComponent(report.id || '')}/export/${format}`);
+                    if (!response.ok) {
+                      setError('Could not export report.');
+                      return;
+                    }
+                    const blob = await response.blob();
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = `pentest-report.${format}`;
+                    link.click();
+                    URL.revokeObjectURL(link.href);
+                  }}
+                >
+                  {format.toUpperCase()}
+                </a>
+              ))}
+            </div>
+          </div>
+          <div className="stats">
+            <div><strong>{report.summary?.total_findings ?? findings.length}</strong><span>Findings</span></div>
+            <div><strong>{report.summary?.high ?? 0}</strong><span>High</span></div>
+            <div><strong>{report.summary?.medium ?? 0}</strong><span>Medium</span></div>
+            <div><strong>{report.summary?.low ?? 0}</strong><span>Low</span></div>
+          </div>
+          <div className="findings">
+            {findings.length ? findings.map((item, index) => (
+              <article className="finding" key={`${item.id || 'finding'}-${index}`}>
+                <div className="finding-head">
+                  <h3>{item.title}</h3>
+                  <span className={`severity ${item.severity}`}>{item.severity}</span>
+                </div>
+                <p>{item.recommendation}</p>
+                <small>{item.category}</small>
+              </article>
+            )) : <p>No findings detected by the configured checks.</p>}
+          </div>
+        </section>
+      )}
+
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <div className="eyebrow">SCHEDULED JOBS</div>
+            <h2>Recurring scans</h2>
+          </div>
+        </div>
+        <form onSubmit={createJob} className="schedule-form">
+          <div className="input-row schedule-grid">
+            <input value={jobTarget} onChange={e => setJobTarget(e.target.value)} placeholder="https://example.com" />
+            <input type="number" min="60" max="86400" value={jobInterval} onChange={e => setJobInterval(Number(e.target.value))} />
+            <button type="submit" className="secondary">Create job</button>
+          </div>
+        </form>
+        {jobs.length ? (
+          <div className="history jobs-list">
+            {jobs.map(job => (
+              <div className="history-row job-row" key={job.id}>
+                <div>
+                  <strong>{job.target}</strong>
+                  <small>{job.interval_seconds}s · {job.status}</small>
+                </div>
+                <span className="history-count">{job.enabled ? 'enabled' : 'paused'}</span>
+              </div>
+            ))}
+          </div>
+        ) : <p className="muted">No scheduled jobs yet.</p>}
+      </section>
+
+      {isAdmin && (
+        <section className="panel admin-panel">
+          <div className="section-heading">
+            <div>
+              <div className="eyebrow">ADMIN</div>
+              <h2>Create user</h2>
+            </div>
+          </div>
+          <form onSubmit={createUser} className="auth-form">
+            <label>
+              Username
+              <input value={newUserName} onChange={e => setNewUserName(e.target.value)} required />
+            </label>
+            <label>
+              Password
+              <input type="password" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} required />
+            </label>
+            <label>
+              Role
+              <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}>
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
+            <button type="submit" className="secondary">Create user</button>
+          </form>
+        </section>
+      )}
+
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <div className="eyebrow">PERSISTED RESULTS</div>
+            <h2>Scan history</h2>
+          </div>
+          <button className="secondary" type="button" onClick={refresh}>Refresh</button>
+        </div>
+        {history.length ? (
+          <div className="history">
+            {history.map(item => (
+              <button className="history-row" type="button" key={item.id} onClick={() => openScan(item.id)}>
+                <span>
+                  <strong>{item.target}</strong>
+                  <small>{new Date(item.created_at).toLocaleString()}</small>
+                </span>
+                <span className="history-count">{item.summary?.total_findings ?? 0} findings</span>
+              </button>
+            ))}
+          </div>
+        ) : <p className="muted">No saved scans yet.</p>}
+      </section>
+
+      <footer>External scanner integrations (Nuclei/ZAP) remain opt-in controls and are not launched automatically.</footer>
+    </main>
+  );
+}
